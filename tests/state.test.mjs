@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { initialState, loadState, signIn, watchAd, openBox } from '../src/state.js';
+const day=new Date(2026,9,14,10), next=new Date(2026,9,15,10);
+test('同一天不能重复签到，连续签到跨天递增，中断后重置',()=>{const s=initialState(day);assert.equal(signIn(s,day),20);assert.equal(signIn(s,day),0);assert.equal(s.balance,23476);assert.equal(signIn(s,next),40);assert.equal(s.streak,2);assert.equal(signIn(s,new Date(2026,9,18,10)),20);assert.equal(s.streak,1);});
+test('广告有每日上限，跨天恢复额度',()=>{const s=initialState(day);for(let i=0;i<10;i++)assert.equal(watchAd(s,day),20);assert.equal(watchAd(s,day),0);assert.equal(s.balance,23656);assert.equal(watchAd(s,next),20);assert.equal(s.ads,1);});
+test('盲盒次数有限，3次广告增加1次机会，次日重置',()=>{const s=initialState(day);for(let i=0;i<3;i++)assert.equal(openBox(s,()=>0,day),20);assert.equal(openBox(s,()=>0,day),0);for(let i=0;i<3;i++)watchAd(s,day);assert.equal(openBox(s,()=>.999,day),50000);assert.equal(openBox(s,()=>0,day),0);assert.equal(openBox(s,()=>0,next),20);assert.equal(s.boxes,1);});
+test('刷新恢复状态，跨天仅清零每日次数',()=>{const s=initialState(day);signIn(s,day);watchAd(s,day);const storage={getItem:()=>JSON.stringify(s)};const same=loadState(storage,day);assert.equal(same.ads,1);assert.equal(same.signedDate,s.signedDate);const later=loadState(storage,next);assert.equal(later.ads,0);assert.equal(later.balance,s.balance);assert.equal(later.streak,1);});
+test('损坏缓存、非法值及读取异常安全回退',()=>{assert.deepEqual(loadState({getItem:()=>'{'},day),initialState(day));assert.deepEqual(loadState({getItem(){throw Error('denied')}},day),initialState(day));const s=loadState({getItem:()=>JSON.stringify({version:1,balance:-100,messages:[null,{role:'user',text:'hello'},{}],model:'<script>',plugins:['files','evil']})},day);assert.equal(s.balance,23456);assert.equal(s.model,'A6 Sonnet');assert.deepEqual(s.messages,[{role:'user',text:'hello'}]);assert.deepEqual(s.plugins,['files']);});
