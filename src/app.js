@@ -1,3 +1,6 @@
+import { initEngine, reconcile, activeTask, createTask, advance, start, log, STEPS, PRODUCTS, placeOrder, payOrder, previewHTML, supportReply } from './engine.js';
+import { workbench, ledgerPage, subscriptionsPage, shop } from './workbench.js';
+import { zipFiles } from './archive.js';
 import { STORAGE_KEY, loadState, initialState, dateKey, rollDay, signIn, watchAd, openBox } from './state.js';
 
 const $ = (selector) => document.querySelector(selector);
@@ -17,24 +20,25 @@ const icons = {
 };
 const icon = (name, cls = '') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${icons[name] || icons.spark}"/></svg>`;
 const storage = { getItem: key => window.localStorage.getItem(key) };
-let state = loadState(storage);
+let state = initEngine(loadState(storage));
+for (const task of state.tasks) if (task.status === 'running') { task.status='paused'; log(task,'工作区已恢复，从检查点继续即可。'); }
 state.messages = state.messages.map(message => message.role === 'assistant' ? { ...message, text: message.text.split('\n\n')[0] } : message);
-let activeTab = '推荐', view = 'dashboard', selectedLevel = 'A7', adHidden = false, web = false, thinking = false;
+let activeTab = '推荐', view = 'workbench', selectedLevel = 'A7', adHidden = false, web = false, thinking = false;
 let draft = '', attachment = '', toastTimer, adTimer, modalAction, sidebarOpen = false, sidebarCollapsed = false;
 const fmt = (n) => n.toLocaleString('zh-CN');
 const signed = () => state.signedDate === dateKey();
-function save() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { toast('浏览器存储不可用，本次操作仍然有效'); } }
+function save() { reconcile(state); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { toast('浏览器存储不可用，本次操作仍然有效'); } }
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 3200); }
 const btn = (action, label, cls = 'primary', attrs = '') => `<button class="${cls}" data-action="${action}" ${attrs}>${label}</button>`;
 function sidebar() {
-  const nav = [['new','edit','新建任务',''],['scheduled','clock','已安排','3'],['plugins','plug','插件',''],['pulls','branch','拉取请求','12'],['home','flame','任务大厅','16'],['achievements','trophy','我的战绩','']];
+  const nav = [['home','code','工作台',''],['new','edit','新建任务',''],['benefits','gift','福利大厅',''],['billing','coin','账单与用量',''],['subscription-page','crown','会员与订阅',''],['support-open','users','在线客服','']];
   const done = Number(signed()) + Number(state.ads >= 3) + Number(state.invited);
   return `<div class="sidebar-overlay ${sidebarOpen?'visible':''}" data-action="sidebar"></div><aside class="sidebar ${sidebarOpen?'open':''}" aria-label="侧边导航">
     <div class="brand"><span class="brand-mark">✳</span>Claude Code <small>CN</small></div>
-    <nav class="nav">${nav.map(([a,i,t,n])=>btn(a,`${icon(i)}<span>${t}</span>${n?`<span class="count">${n}</span>`:''}`,`nav-btn ${a==='home'&&view==='dashboard'?'active':''}`)).join('')}</nav>
-    <div><div class="section-label">项目</div>${btn('project',`${icon('folder')}项目 A`,'nav-btn project selected')}${btn('frontend','前端功能迭代','nav-btn project-child')}${btn('performance','接口性能优化','nav-btn project-child')}${btn('mobile',`${icon('folder')}移动端应用`,'nav-btn project')}${btn('testing',`${icon('folder')}测试自动化框架`,'nav-btn project')}</div>
+    <nav class="nav">${nav.map(([a,i,t,n])=>btn(a,`${icon(i)}<span>${t}</span>${n?`<span class="count">${n}</span>`:''}`,`nav-btn ${a==='home'&&view==='workbench'?'active':''}`)).join('')}</nav>
+    <div><div class="section-label">项目 · ${state.tasks.length}</div><div class="wb-projects">${state.tasks.slice(0,12).map(t=>`<button class="nav-btn project ${t.id===state.activeTaskId?'selected':''}" data-work="select-task" data-id="${escape(t.id)}">${icon('folder')}<span>${escape(t.title)}</span></button>`).join('')||'<p class="section-label">还没有项目</p>'}</div></div>
     ${btn('team',`${icon('users')} 智能研发团队<br><b>SVIP</b>`,'team')}
-    <div class="trial">${icon('clock')} 体验卡剩余<br><span id="trial-clock">06:23:41</span></div>
+    <div class="trial">${icon('coin')} 可用 ${fmt(state.balance)} Token<br>钱包 ¥${(state.account.cash/100).toFixed(2)}</div>
     <div class="daily"><strong>今日任务 ${done}/4</strong><p class="${signed()?'done':''}">${signed()?'✓':'○'} 每日签到</p><p class="${state.ads>=3?'done':''}">${state.ads>=3?'✓':'○'} 看 3 条广告</p><p class="${state.invited?'done':''}">${state.invited?'✓':'○'} 邀请 1 位好友</p><p>○ 消耗 1 万 Token</p></div>
   </aside>`;
 }
@@ -56,7 +60,7 @@ function dashboard() {
   </section>`;
 }
 const workspaces = {
-  '代码助手': ['把想法，写成代码。','从第一个函数，到下一次上线。',[['code','审查一段代码','检查边界条件、可读性和性能'],['branch','设计一个 API','明确接口契约和异常处理'],['bulb','解释报错信息','逐步排查问题，找到修复思路']]],
+  '代码助手': ['把想法，写成代码。','从第一个函数，到下一次上线。',[['code','做一个登录页','邮箱校验、密码输入与响应式布局'],['branch','做一个待办清单','添加任务、标记完成与删除'],['bulb','做一个产品展示页','产品介绍、功能卡片与联系表单']]],
   '智能问答': ['好问题，值得好答案。','从这里开始，探索你的下一个想法。',[['bulb','拆解一个复杂问题','把大问题变成可执行的小步骤'],['file','整理会议纪要','提炼结论、行动项与负责人'],['spark','帮我构思一篇文章','先确定主题，再梳理内容结构']]],
   '数据分析': ['让数据，讲得更清楚。','探索规律，提出假设，验证想法。',[['chart','分析一份业务报表','梳理指标口径和变化趋势'],['code','编写 SQL 查询','明确数据表和查询目标'],['target','设计一个指标体系','连接业务目标与可衡量的结果']]],
   'AI 绘图': ['让灵感，有个形状。','描绘你的画面，从一段提示词开始。',[['image','设计一张文章封面','明确主体、构图和整体色调'],['spark','构思一个角色','从性格特点推导视觉设定'],['image','优化绘图提示词','补充镜头、材质与光影细节']]],
@@ -64,13 +68,14 @@ const workspaces = {
 function workspace() { const [title,desc,cards]=workspaces[activeTab]||workspaces['智能问答']; return `<section class="workspace"><h1 class="workspace-title">${title}</h1><p class="workspace-desc">${desc}</p><div class="prompt-grid">${cards.map(([i,t,d])=>btn('prompt',`${icon(i)}<strong>${t}</strong><small>${d}</small>`,'prompt-card',`data-prompt="${t}"`)).join('')}</div></section>`; }
 function chat() { return `<section class="chat" aria-label="对话记录"><div class="chat-header"><h2>一起，把想法变成现实。</h2>${btn('home','返回大厅','tool-chip')}</div><div aria-live="polite">${state.messages.map(m=>`<article class="chat-message ${m.role}"><span class="chat-role">${m.role==='user'?'你':'✳ CLAUDE 中文版'}</span>${escape(m.text)}</article>`).join('')}</div></section>`; }
 function modelMenu() {
-  return `<div class="model-menu" id="model-menu" hidden aria-label="选择模型">${['A6 Sonnet','A7 Sonnet','A9 Opus mini','A10 Opus 4.5'].map((m,i)=>`${i===1?`<div class="model-speed"><span>加速倍率</span>${btn('speed',state.speed+' ›','')}</div>`:''}${btn('model',`<div><strong>${i>0&&state.level==='A6'?icon('lock'):''} ${m}</strong>${i===0?'<small>日常写码 · 加速 0/3</small>':''}</div>${state.model===m?icon('check'):i>0?'<span class="tag">体验解锁</span>':''}`,`model-option ${i>0&&state.level==='A6'?'locked':''}`,`data-model="${m}" aria-pressed="${state.model===m}"`)}`).join('')}<p class="model-tip">看 3 条广告，临时体验 A7 一次 ›</p></div>`;
+  return `<div class="model-menu" id="model-menu" hidden aria-label="选择模型">${['A6 Sonnet','A7 Sonnet','A9 Opus mini','A10 Opus 4.5'].map((m,i)=>`${i===1?`<div class="model-speed"><span>加速倍率</span>${btn('speed',state.speed+' ›','')}</div>`:''}${btn('model',`<div><strong>${i>0&&state.level==='A6'?icon('lock'):''} ${m}</strong>${i===0?'<small>日常写码 · 工作区执行</small>':''}</div>${state.model===m?icon('check'):i>0?'<span class="tag">体验解锁</span>':''}`,`model-option ${i>0&&state.level==='A6'?'locked':''}`,`data-model="${m}" aria-pressed="${state.model===m}"`)}`).join('')}<p class="model-tip">看 3 条广告，临时体验 A7 一次 ›</p></div>`;
 }
 function render() {
   if ($('#prompt')) draft=$('#prompt').value;
   rollDay(state);
   document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed);
-  $('#app').innerHTML=`<header class="topbar">${btn('sidebar',icon('panel'),'icon-btn','aria-label="切换侧边栏"')}${btn('home',icon('arrow'),'icon-btn desktop-menu','aria-label="返回大厅"')}<span class="window-title">Claude 中文版</span>${['文件','编辑','视图','帮助'].map(t=>btn('menu',t,'desktop-menu',`data-menu="${t}"`)).join('')}</header>${sidebar()}<main class="main"><div class="content"><div class="promo">${icon('gift')}<strong>新人专享礼</strong><span class="promo-detail">首充 6 元送 12000 Token + A2 体验卡</span>${btn('welcome',state.welcome?'已领取':'立即领取','claim',state.welcome?'disabled':'')}<div class="wallet"><span class="balance">${icon('coin')}${fmt(state.balance)}</span>${btn('recharge','充值','recharge')}</div></div><nav class="tabs" aria-label="工作区分类">${['推荐','代码助手','智能问答','数据分析','AI 绘图','更多'].map(t=>btn('tab',t+(t==='更多'?'<span class="new">NEW</span>':''),`tab ${activeTab===t?'active':''}`,`data-tab="${t}" aria-current="${activeTab===t?'page':'false'}"`)).join('')}</nav>${view==='chat'?chat():activeTab==='推荐'?dashboard():workspace()}</div><div class="composer-wrap"><form class="composer" id="chat-form"><div class="file-chip" id="file-chip">${attachment?icon('file')+escape(attachment)+btn('remove-file','×','icon-btn','aria-label="移除附件"'):''}</div><textarea id="prompt" aria-label="输入你的需求" placeholder="输入你的需求，Shift + Enter 换行" rows="2" maxlength="6000">${escape(draft)}</textarea><div class="composer-tools">${btn('attach',icon('plus'),'tool-chip','type="button" aria-label="添加附件"')}${btn('web',icon('globe')+'联网搜索','tool-chip',`type="button" aria-pressed="${web}"`)}${btn('thinking',icon('bulb')+'深度思考','tool-chip',`type="button" aria-pressed="${thinking}"`)}<span class="composer-hint">${signed()?'今天的灵感已经到账':'今日签到领 Token'}</span><div class="model-wrap">${modelMenu()}${btn('model-menu',`${escape(state.model)}<span class="speed-label"> · 加速 0/3</span>${icon('down')}`,'model-button','type="button" aria-expanded="false" aria-controls="model-menu"')}</div><button type="submit" class="send" aria-label="发送消息">${icon('up')}</button></div><input type="file" id="file-input" hidden accept=".txt,.md,.csv,.json,.js,.ts,.java,.py,.png,.jpg,.jpeg,.pdf" /></form><p class="footer">Claude 中文版</p></div></main>`;
+  $('#app').innerHTML=`<header class="topbar">${btn('sidebar',icon('panel'),'icon-btn','aria-label="切换侧边栏"')}${btn('home',icon('arrow'),'icon-btn desktop-menu','aria-label="返回大厅"')}<span class="window-title">Claude 中文版</span>${['文件','编辑','视图','帮助'].map(t=>btn('menu',t,'desktop-menu',`data-menu="${t}"`)).join('')}</header>${sidebar()}<main class="main"><div class="content"><div class="promo">${icon('gift')}<strong>新人专享礼</strong><span class="promo-detail">首充 6 元送 12000 Token + A2 体验卡</span>${btn('welcome',state.welcome?'已领取':'立即领取','claim',state.welcome?'disabled':'')}<div class="wallet"><span class="balance">${icon('coin')}${fmt(state.balance)}</span>${btn('recharge','充值','recharge')}</div></div><nav class="tabs" aria-label="工作区分类">${['推荐','代码助手','智能问答','数据分析','AI 绘图','更多'].map(t=>btn('tab',t+(t==='更多'?'<span class="new">NEW</span>':''),`tab ${activeTab===t?'active':''}`,`data-tab="${t}" aria-current="${activeTab===t?'page':'false'}"`)).join('')}</nav>${view==='workbench'?workbench(state):view==='ledger'?ledgerPage(state,ledgerFilter):view==='subscriptions'?subscriptionsPage(state):view==='chat'?chat():activeTab==='推荐'?dashboard():workspace()}</div><div class="composer-wrap"><form class="composer" id="chat-form"><div class="file-chip" id="file-chip">${attachment?icon('file')+escape(attachment)+btn('remove-file','×','icon-btn','aria-label="移除附件"'):''}</div><textarea id="prompt" aria-label="输入你的需求" placeholder="输入你的需求，Shift + Enter 换行" rows="2" maxlength="6000">${escape(draft)}</textarea><div class="composer-tools">${btn('attach',icon('plus'),'tool-chip','type="button" aria-label="添加附件"')}${btn('web',icon('globe')+'联网搜索','tool-chip',`type="button" aria-pressed="${web}"`)}${btn('thinking',icon('bulb')+'深度思考','tool-chip',`type="button" aria-pressed="${thinking}"`)}<span class="composer-hint">${signed()?'今天的灵感已经到账':'今日签到领 Token'}</span><div class="model-wrap">${modelMenu()}${btn('model-menu',`${escape(state.model)}<span class="speed-label"> · ${escape(state.speed)}</span>${icon('down')}`,'model-button','type="button" aria-expanded="false" aria-controls="model-menu"')}</div><button type="submit" class="send" aria-label="发送消息">${icon('up')}</button></div><input type="file" id="file-input" hidden accept=".txt,.md,.csv,.json,.js,.ts,.java,.py,.png,.jpg,.jpeg,.pdf" /></form><p class="footer">Claude 中文版</p></div></main>`;
+  const preview=$('#artifact-preview'); if(preview) preview.srcdoc=previewHTML(activeTask(state));
   document.querySelectorAll('button:not([type])').forEach(b=>b.type='button');
   if (!adHidden && view==='dashboard' && activeTab==='推荐') startSkip();
 }
@@ -89,9 +94,7 @@ function showModal(title, body, action) {
 function closeModal() { clearInterval(adTimer);$('#modal').close(); document.body.classList.remove('modal-open');modalAction=null; }
 $('#modal').addEventListener('close',()=>{clearInterval(adTimer);document.body.classList.remove('modal-open');modalAction=null;});
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const r=$('#modal').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}});
-function showUpgrade() {
-  showModal('解锁更多一点灵感',`<div class="modal-hero"><small>Claude 会员 ${selectedLevel}</small><strong>更多可能性</strong><span>模型切换 · 1.5x 加速 · 免广告体验</span></div>${btn('confirm','免费体验 A7','primary purple')}`,()=>{state.level='A7';state.growth=Math.max(1000,state.growth);state.speed='1.5x';adHidden=true;save();closeModal();render();toast('A7 会员已开通');});
-}
+function showUpgrade() { checkout('member'); }
 function showAd() {
   if(state.ads>=10)return toast('今天已看满 10 次，明天再来');
   showModal('休息片刻，灵感继续',`<div class="modal-hero"><small>CLAUDE 中文版</small><strong>好代码，值得等待。</strong><p>给大脑放个小假，把灵感留给下一行。</p><strong class="ad-countdown" id="ad-seconds">5</strong></div>${btn('ad-reward','观看中…','primary','disabled')}<div class="caption">观看 5 秒后领取 20 Token，提前关闭不会发放。</div>`);
@@ -104,10 +107,20 @@ function invite() {
 const list = (rows) => `<div class="modal-list">${rows.map(([a,b])=>`<div class="modal-row"><span>${a}</span><b>${b}</b></div>`).join('')}</div>`;
 function submit() {
   const input=$('#prompt');const message=input.value.trim();if(!message)return input.focus();
-  state.messages.push({role:'user',text:message+(attachment?`\n附件：${attachment}`:'')});
-  const response=activeTab==='代码助手'?'可以从「目标、输入输出、约束、验收标准」四个方面拆解这项开发任务。你可以继续补充代码片段和预期行为。':activeTab==='数据分析'?'可以先明确指标口径、时间范围和数据粒度，再检查缺失值、重复值与变化趋势。':activeTab==='AI 绘图'?'可以先描述画面主体、构图、风格和光线，我会把这些信息组织成一段绘图提示词。':'你的想法已记录。可以继续补充目标、背景和期望结果，把需求描述得更具体。';
-  state.messages.push({role:'assistant',text:response});
-  state.messages=state.messages.slice(-50);draft='';attachment='';input.value='';view='chat';save();render();requestAnimationFrame(()=>$('#prompt').focus());
+  const current=activeTask(state);
+  if(current && /余额|扣费|收费|多少钱|为什么|导出|取消续费/.test(message)){current.messages.push({role:'user',text:message},{role:'assistant',text:supportReply(state,message)});draft='';input.value='';view='workbench';save();render();return;}
+  if(current&&view==='workbench'&&/改|调整|换成|修改/.test(message)){
+    if(current.status==='running')return toast('请先暂停当前执行，再提交修改');
+    current.messages.push({role:'user',text:message});current.prompt+='\n'+message;
+    current.original={...current.files};current.revision++;current.step=0;current.status='ready';current.checks=[];
+    current.messages.push({role:'assistant',text:'已记录修改要求。将保留上一个版本用于对比，并按新需求重新生成。'});
+    log(current,'创建新修订 V'+current.revision+'，保留上个版本。');
+  }else{
+    if(current?.status==='running'){current.status='paused';log(current,'切换任务，已保存检查点。');}
+    createTask(state,message+(attachment?'\n附件：'+attachment:''));
+  }
+  clearTimeout(executionTimer);draft='';attachment='';input.value='';view='workbench';save();render();
+  start(state,activeTask(state));save();render();scheduleExecution();
 }
 document.addEventListener('submit',e=>{if(e.target.id==='chat-form'){e.preventDefault();submit();}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){const m=$('#model-menu');if(m){m.hidden=true;$('[data-action="model-menu"]').setAttribute('aria-expanded','false');}if(sidebarOpen){sidebarOpen=false;render();}}if(e.target.id==='prompt'&&e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();submit();}});
@@ -118,8 +131,12 @@ document.addEventListener('click',async e=>{
   if(!b||b.disabled)return;const a=b.dataset.action;
   if(a==='close')return closeModal();if(a==='confirm')return modalAction?.();
   if(a==='sidebar'){if(window.innerWidth>820)sidebarCollapsed=!sidebarCollapsed;else sidebarOpen=!sidebarOpen;return render();}
-  if(['home','new'].includes(a)){view='dashboard';activeTab=a==='new'?'智能问答':'推荐';sidebarOpen=false;if(a==='new'){$('#prompt').value='';draft='';state.messages=[];save();}render();if(a==='new')$('#prompt').focus();return;}
-  if(a==='tab'){if(b.dataset.tab==='更多')return showModal('更多工具',list([['文档处理','即将上线'],['工作流编排','即将上线'],['个人知识库','即将上线']])+'<p>先从代码、问答、数据和创作开始。</p>');activeTab=b.dataset.tab;view='dashboard';return render();}
+  if(['home','new'].includes(a)){view='workbench';activeTab='推荐';sidebarOpen=false;if(a==='new'){const t=activeTask(state);if(t?.status==='running'){t.status='paused';log(t,'已保存检查点。');}clearTimeout(executionTimer);state.activeTaskId=null;$('#prompt').value='';draft='';save();}render();if(a==='new')$('#prompt').focus();return;}
+  if(a==='benefits'){view='dashboard';activeTab='推荐';sidebarOpen=false;return render();}
+  if(a==='billing'){view='ledger';sidebarOpen=false;return render();}
+  if(a==='subscription-page'){view='subscriptions';sidebarOpen=false;return render();}
+  if(a==='support-open')return openSupport();
+  if(a==='tab'){if(b.dataset.tab==='更多')return showModal('更多工具',list([['文档处理','即将上线'],['工作流编排','即将上线'],['个人知识库','即将上线']])+'<p>先从代码、问答、数据和创作开始。</p>');activeTab=b.dataset.tab;view=activeTab==='推荐'?'workbench':'dashboard';return render();}
   if(a==='prompt'){$('#prompt').value=b.dataset.prompt+'：';$('#prompt').focus();return;}
   if(a==='sign'){const reward=signIn(state);save();if($('#modal').open)closeModal();render();return toast(reward?`签到成功，+${reward} Token`:'今天已经签到啦');}
   if(a==='skip'){adHidden=true;return render();}
@@ -131,7 +148,7 @@ document.addEventListener('click',async e=>{
   if(a==='upgrade')return showUpgrade();
   if(a==='model-menu'){const m=$('#model-menu');m.hidden=!m.hidden;b.setAttribute('aria-expanded',String(!m.hidden));return;}
   if(a==='model'){if(b.dataset.model!=='A6 Sonnet'&&state.level==='A6')return showUpgrade();state.model=b.dataset.model;save();render();return toast(`已切换到 ${state.model}`);}
-  if(a==='speed'){if(state.level==='A6')return showUpgrade();state.speed=state.speed==='1.0x'?'1.5x':'1.0x';save();render();return toast(`加速倍率：${state.speed}`);}
+  if(a==='speed'){if(!state.entitlements.speed)return checkout('speed');state.speed=state.speed==='1.0x'?'1.5x':'1.0x';save();render();return toast(`加速倍率：${state.speed}`);}
   if(a==='web'||a==='thinking'){if(a==='web')web=!web;else thinking=!thinking;render();return toast(`${a==='web'?'联网搜索':'深度思考'}${(a==='web'?web:thinking)?'已选中':'已取消'}`);}
   if(a==='attach')return $('#file-input').click();if(a==='remove-file'){attachment='';return render();}
   if(a==='invite')return invite();
@@ -139,7 +156,7 @@ document.addEventListener('click',async e=>{
   if(a==='invite-assist'){if(!state.invited){state.invited=true;state.balance+=2000;save();}closeModal();render();return toast('助力完成，+2,000 Token');}
   if(a==='finance')return showModal('Claude 金融',`<div class="modal-hero"><small>昨日收益</small><strong>+23.68 USD</strong></div>${btn('confirm',state.subscription?'取消订阅':'订阅','primary dark')}`,()=>{state.subscription=!state.subscription;save();closeModal();render();toast(state.subscription?'已开启订阅':'已取消订阅');});
   if(a==='loan')return showModal('Token 借呗',`<div class="modal-hero"><small>可借额度</small><strong>80,000 Token</strong></div>${btn('close','了解了','primary green')}`);
-  if(a==='recharge')return showModal('灵感补给站',`${list([['轻装上阵 · 6 元','12,000 Token'],['持续创作 · 30 元','80,000 Token'],['满格灵感 · 98 元','300,000 Token']])}${btn('confirm','领取 1,000 Token')}`,()=>{state.balance+=1000;save();closeModal();render();toast('余额 +1,000 Token');});
+  if(a==='recharge')return showModal('灵感补给站',shop(state));
   if(a==='rank')return showModal('本周消耗榜',list([['01 · 卷王本王','1,240万'],['02 · 凌晨四点还在写','980万'],['03 · 今天一定不加班','860万'],['04 · Ctrl+C 大师','750万'],['8,412 · 你','23万']])+'');
   if(a==='tasks'||a==='rewards')return showModal(a==='tasks'?'今日任务':'福利中心',list([['每日签到',signed()?'已完成':'待完成'],['看 3 条广告',`${Math.min(3,state.ads)}/3`],['好友助力',state.invited?'已完成':'待完成'],['新人礼包',state.welcome?'已领取':'可领取']])+btn('sign',signed()?'今日已签到':'立即签到','primary',signed()?'disabled':''));
   if(a==='redeem')return showModal('兑换中心',`<p>输入体验兑换码 <strong>HELLOCLAUDE</strong>，领取新人礼包。</p><input class="modal-input" id="redeem-code" aria-label="兑换码" placeholder="输入兑换码" autocomplete="off" />${btn('confirm','兑换礼包')}`,()=>{if($('#redeem-code').value.trim().toUpperCase()!=='HELLOCLAUDE')return toast('兑换码不正确，请试试 HELLOCLAUDE');if(state.welcome)return toast('新人礼包已领取，不能重复兑换');state.welcome=true;state.balance+=12000;save();closeModal();render();toast('兑换成功，+12,000 Token');});
@@ -150,7 +167,96 @@ document.addEventListener('click',async e=>{
   if(a==='achievements')return showModal('每一点进步，都算数',`<div class="modal-hero">${icon('trophy')}<strong>${fmt(state.balance)}</strong><span>当前 Token</span></div>${list([['连续签到',`${state.streak} 天`],['成长值',String(state.growth)],['对话消息',String(state.messages.filter(m=>m.role==='user').length)]])}`);
   if(a==='team')return showModal('智能研发团队',list([['架构师 Agent','方案与技术选型'],['开发 Agent','功能实现与重构'],['测试 Agent','验证与质量保障']])+'');
   if(['project','frontend','performance','mobile','testing'].includes(a)){activeTab='代码助手';view='dashboard';sidebarOpen=false;render();$('#prompt').value=({project:'帮我梳理项目 A 的开发计划：',frontend:'帮我设计前端功能迭代方案：',performance:'帮我分析接口性能优化方案：',mobile:'帮我设计移动端应用：',testing:'帮我搭建测试自动化框架：'})[a];$('#prompt').focus();return;}
-  if(a==='menu'){const m=b.dataset.menu;if(m==='文件')return showModal('文件',`${btn('attach','选择本地文件')}`);if(m==='编辑')return showModal('编辑',`<p>清空当前草稿，开始一个新的想法。</p>${btn('confirm','清空草稿')}`,()=>{draft='';$('#prompt').value='';attachment='';closeModal();render();});if(m==='视图'){if(window.innerWidth>820)sidebarCollapsed=!sidebarCollapsed;else sidebarOpen=!sidebarOpen;return render();}return showModal('关于 Claude 中文版',`<div class="modal-hero"><span class="brand-mark">✳</span><strong>claude-cn</strong><small>版本 1.0.0</small></div><p>Enter 发送 · Shift + Enter 换行 · Esc 关闭弹窗</p>${btn('reset','重置数据','primary dark')}`);}
-  if(a==='reset')return showModal('重置数据',`<p>将清空当前浏览器中的对话、余额变化、会员和签到记录，恢复初始状态。</p>${btn('confirm','确认重置','primary dark')}`,()=>{state=initialState();draft='';attachment='';$('#prompt').value='';adHidden=false;skipDeadline=Date.now()+3000;view='dashboard';activeTab='推荐';save();closeModal();render();toast('已恢复初始状态');});
+  if(a==='menu'){const m=b.dataset.menu;if(m==='文件')return showModal('文件',`${btn('attach','选择本地文件')}`);if(m==='编辑')return showModal('编辑',`<p>清空当前草稿，开始一个新的想法。</p>${btn('confirm','清空草稿')}`,()=>{draft='';$('#prompt').value='';attachment='';closeModal();render();});if(m==='视图'){if(window.innerWidth>820)sidebarCollapsed=!sidebarCollapsed;else sidebarOpen=!sidebarOpen;return render();}return showModal('关于 Claude 中文版',`<div class="modal-hero"><span class="brand-mark">✳</span><strong>claude-cn</strong><small>版本 2.0.0</small></div><p>Enter 发送 · Shift + Enter 换行 · Esc 关闭弹窗</p>${btn('reset','重置数据','primary dark')}`);}
+  if(a==='reset')return showModal('重置数据',`<p>将清空当前浏览器中的对话、余额变化、会员和签到记录，恢复初始状态。</p>${btn('confirm','确认重置','primary dark')}`,()=>{clearTimeout(executionTimer);state=initEngine(initialState());draft='';attachment='';$('#prompt').value='';adHidden=false;skipDeadline=Date.now()+3000;view='workbench';activeTab='推荐';save();closeModal();render();toast('已恢复初始状态');});
+});
+let executionTimer, ledgerFilter='all', pendingExport=false;
+let supportMessages=[], cancelStep=0;
+function scheduleExecution(){
+  clearTimeout(executionTimer);
+  const t=activeTask(state);if(t?.status!=='running')return;
+  const delay=state.entitlements.speed&&state.speed==='1.5x'?1000:1700;
+  executionTimer=setTimeout(()=>{
+    if(activeTask(state)?.id!==t.id||t.status!=='running')return;
+    const editor=$('#source-editor');const selection=editor&&document.activeElement===editor?[editor.selectionStart,editor.selectionEnd,editor.scrollTop]:null;
+    advance(state,t);save();render();
+    if(selection&&$('#source-editor')){$('#source-editor').focus();$('#source-editor').setSelectionRange(selection[0],selection[1]);$('#source-editor').scrollTop=selection[2];}
+    scheduleExecution();
+  },delay);
+}
+function checkout(product){
+  if(product==='export'&&state.entitlements.export)return exportTask();
+  if(product==='speed'&&state.entitlements.speed)return toast('执行加速包已开通');
+  const order=state.orders.find(o=>o.product===product&&o.status==='pending')||placeOrder(state,product);
+  save();showOrder(order);
+}
+function showOrder(o){
+  showModal(o.status==='paid'?'订单已完成':'确认订单',`<p class="wb-order-number">订单号 ${escape(o.number)}</p><div class="wb-checkout-rows"><p><span>商品</span><strong>${escape(o.name)}</strong></p><p><span>金额</span><strong>¥${(o.price/100).toFixed(2)}</strong></p><p><span>付款方式</span><span>账户钱包</span></p><p><span>钱包余额</span><span>¥${(state.account.cash/100).toFixed(2)}</span></p>${o.tokens?`<p><span>到账额度</span><span>${fmt(o.tokens)} Token</span></p>`:''}</div>${o.product==='member'?'<p class="wb-note">会员含模型选择与额度。源代码导出、执行加速为独立权益。开通后自动续费，可在会员中心关闭。</p>':''}${o.status==='pending'?`<button class="primary" data-work="pay" data-id="${escape(o.id)}">确认支付 ¥${(o.price/100).toFixed(2)}</button><button class="wb-link" data-work="cancel-order" data-id="${escape(o.id)}">取消订单</button>`:o.status==='paid'?'<p class="positive">✓ 权益已到账</p><button class="primary" data-work="back-task">返回工作区</button>':'<p>订单已取消</p>'}`);
+}
+function download(name,content,type='text/plain;charset=utf-8'){
+ const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
+function exportTask(){
+ const t=activeTask(state);if(!t||t.status!=='completed')return toast('请先完成当前任务');
+ if(!state.entitlements.export){pendingExport=true;return showModal('你的作品，已准备就绪',`<p>${escape(t.title)} 已完成，共 ${Object.keys(t.files).length} 个文件。</p><p class="wb-note">${state.level==='A7'?'你已是 A7 会员。':'当前会员等级 '+state.level+'。'}生成是模型权益，带走是导出权益。</p><button class="primary" data-work="buy" data-product="export">开通导出通行证 · ¥6</button><button class="wb-link" data-work="close">继续在工作区预览</button>`);}
+ download('claude-project-'+t.id.slice(0,8)+'.zip',zipFiles(t.files),'application/zip');pendingExport=false;log(t,'项目源代码已打包下载。');save();closeModal();render();toast('ZIP 文件已导出');
+}
+function openSupport(){
+ if(!supportMessages.length)supportMessages.push({role:'客服小 C',text:'你好，我可以查询你的任务、Token 账单和订阅状态。请问有什么可以帮你？'});
+ showModal('在线客服 · 小 C',`<div class="wb-support-chat">${supportMessages.map(m=>`<p><small>${escape(m.role)}</small>${escape(m.text)}</p>`).join('')}</div><div class="wb-support-form"><input id="support-question" class="modal-input" aria-label="客服问题" placeholder="为什么又要付费？" maxlength="500"><button class="wb-button" data-work="support-send">发送</button></div><div><button class="wb-link" data-work="support-billing">查扣费</button><button class="wb-link" data-work="support-export">查导出</button><button class="wb-link" data-work="ticket">提交工单</button></div>${state.tickets.length?`<small>最近工单：${escape(state.tickets.at(-1).number)} · 已受理</small>`:''}`);
+ const chat=$('.wb-support-chat');chat.scrollTop=chat.scrollHeight;
+}
+function cancelSubscription(){
+ if(!state.account.autoRenew)return toast('自动续费已经关闭');
+ if(cancelStep===0)return showModal('确定离开自动续费吗？','<p>下期将不再自动开通。当前已获得的 Token 和本期权益会保留。</p><button class="primary" data-work="close">保留自动续费</button><button class="wb-link" data-work="cancel-next">继续取消</button>');
+ if(cancelStep===1)return showModal('告诉我们哪里还可以更好','<div class="wb-reasons"><label><input type="radio" name="cancel-reason" value="收费项目太多" checked> 收费项目太多</label><label><input type="radio" name="cancel-reason" value="暂时不需要"> 暂时不需要</label><label><input type="radio" name="cancel-reason" value="只是想取消"> 只是想取消</label></div><button class="primary" data-work="cancel-next">确认选择</button>');
+ showModal('最后一次挽留','<p>留下自动续费，可领取一次 60 Token 挽留礼。</p><p class="wb-note">我们尊重你的选择，也珍惜最后一次推荐的机会。</p><button class="primary" data-work="retain">领取并保留</button><button class="wb-link" data-work="cancel-finish">不用了，确认关闭自动续费</button>');
+}
+document.addEventListener('input',event=>{
+ if(event.target.id==='source-editor'){const t=activeTask(state);if(t&&event.target.dataset.file){t.files[event.target.dataset.file]=event.target.value;save();}}
+});
+document.addEventListener('keydown',event=>{if(event.target.id==='support-question'&&event.key==='Enter'&&!event.isComposing){event.preventDefault();$('[data-work="support-send"]').click();}});
+document.addEventListener('click',event=>{
+ const button=event.target.closest('[data-work]');if(!button||button.disabled)return;
+ const a=button.dataset.work,t=activeTask(state);
+ if(a==='close')return closeModal();
+ if(a==='quick'){$('#prompt').value=button.dataset.prompt;return submit();}
+ if(a==='select-task'){if(t?.status==='running'&&t.id!==button.dataset.id){t.status='paused';log(t,'切换任务，进度已保存。');}clearTimeout(executionTimer);state.activeTaskId=button.dataset.id;view='workbench';sidebarOpen=false;save();render();return scheduleExecution();}
+ if(a==='run'){if(!start(state,t))return toast(t?.status==='completed'?'任务已完成':'额度仍然不足，请先补充');save();render();return scheduleExecution();}
+ if(a==='pause'){clearTimeout(executionTimer);if(t){t.status='paused';log(t,'用户暂停，进度已保存。');save();render();}return;}
+ if(a==='tab'){t.tab=button.dataset.tab;save();return render();}
+ if(a==='file'){t.selectedFile=button.dataset.file;save();return render();}
+ if(a==='refresh'){if($('#artifact-preview'))$('#artifact-preview').srcdoc=previewHTML(t);return;}
+ if(a==='ledger'){view='ledger';return render();}
+ if(a==='filter'){ledgerFilter=button.dataset.filter;return render();}
+ if(a==='shop')return showModal('灵感补给站',shop(state));
+ if(a==='buy')return checkout(button.dataset.product);
+ if(a==='order'){const o=state.orders.find(o=>o.id===button.dataset.id);if(o)showOrder(o);return;}
+ if(a==='cancel-order'){const o=state.orders.find(o=>o.id===button.dataset.id);if(o?.status==='pending')o.status='cancelled';save();closeModal();render();return;}
+ if(a==='pay'){
+   if(!payOrder(state,button.dataset.id))return toast('订单不可支付或钱包余额不足');
+   const o=state.orders.find(o=>o.id===button.dataset.id);save();render();
+   if(pendingExport&&o.product==='export')return exportTask();
+   showOrder(o);return;
+ }
+ if(a==='back-task'){closeModal();view='workbench';render();return;}
+ if(a==='ad')return showAd();
+ if(a==='export')return exportTask();
+ if(a==='speed')return state.entitlements.speed?toast('加速包已生效'):checkout('speed');
+ if(a==='download-ledger'){
+   const cell=v=>'"'+String(v).replace(/"/g,'""')+'"';
+   const rows=[['时间','项目','变动','余额'],...state.ledger.map(r=>[new Date(r.time).toISOString(),r.label,r.amount,r.balance])];
+   return download('claude-billing.csv','\ufeff'+rows.map(r=>r.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8');
+ }
+ if(a==='support')return openSupport();
+ if(['support-send','support-billing','support-export'].includes(a)){
+   const q=a==='support-send'?$('#support-question').value.trim():a==='support-billing'?'为什么扣这么多 Token':'为什么导出还要付费';if(!q)return;
+   supportMessages.push({role:'你',text:q},{role:'客服小 C',text:supportReply(state,q)});supportMessages=supportMessages.slice(-20);return openSupport();
+ }
+ if(a==='ticket'){const question=supportMessages.filter(x=>x.role==='你').at(-1)?.text||'咨询当前任务';state.tickets.push({number:'TK'+Date.now().toString().slice(-8),question,taskId:t?.id||null,createdAt:Date.now()});save();supportMessages.push({role:'客服小 C',text:'工单已受理。你的等待，也在我们的服务流程之内。'});return openSupport();}
+ if(a==='cancel-subscription'){cancelStep=0;return cancelSubscription();}
+ if(a==='cancel-next'){cancelStep++;return cancelSubscription();}
+ if(a==='cancel-finish'){state.account.autoRenew=false;save();closeModal();render();return toast('自动续费已关闭，本期权益保留');}
+ if(a==='retain'){if(!state.account.retentionClaimed){state.account.retentionClaimed=true;state.balance+=60;}save();closeModal();render();return toast('已保留自动续费');}
 });
 render();

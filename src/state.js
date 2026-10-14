@@ -21,6 +21,9 @@ export function loadState(storage, now = new Date()) {
     value.speed = ['1.0x', '1.5x'].includes(raw.speed) ? raw.speed : '1.0x';
     value.messages = Array.isArray(raw.messages) ? raw.messages.filter(m => m && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string').slice(-50).map(m => ({ role: m.role, text: m.text.slice(0, 6000) })) : [];
     value.plugins = Array.isArray(raw.plugins) ? raw.plugins.filter(p => ['search', 'code', 'files'].includes(p)) : [];
+    for (const key of ['tasks', 'ledger', 'orders', 'tickets']) if (Array.isArray(raw[key])) value[key] = raw[key];
+    for (const key of ['account', 'entitlements']) if (raw[key] && typeof raw[key] === 'object') value[key] = raw[key];
+    if (typeof raw.activeTaskId === 'string') value.activeTaskId = raw.activeTaskId;
     if (raw.day !== fresh.day) { value.ads = 0; value.boxes = 0; }
     return value;
   } catch { return fresh; }
